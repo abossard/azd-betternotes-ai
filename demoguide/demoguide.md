@@ -44,18 +44,18 @@ This scenario is based on these Azure resources:
 * `st4uyuvzgfyqvtq` - Azure Storage Account for uploaded and processed files.
 * `appi-4uyuvzgfyqvtq` + `log-4uyuvzgfyqvtq` - Application Insights and Log Analytics for monitoring.
 
-<img src="./images/01-resource-group-overview.png" alt="BetterNotes Resource Group Overview" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/01-resource-group-overview.png" alt="BetterNotes Resource Group Overview" style="width:70%;">
 <br></br>
 
 Key resource blades to show in Azure Portal:
 
-<img src="./images/02-app-service-overview.png" alt="BetterNotes App Service Overview" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/02-app-service-overview.png" alt="BetterNotes App Service Overview" style="width:70%;">
 <br></br>
 
-<img src="./images/03-document-intelligence-overview.png" alt="Document Intelligence Overview" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/03-document-intelligence-overview.png" alt="Document Intelligence Overview" style="width:70%;">
 <br></br>
 
-<img src="./images/04-storage-account-overview.png" alt="Storage Account Overview" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/04-storage-account-overview.png" alt="Storage Account Overview" style="width:70%;">
 <br></br>
 
 ### 2. What can I demo from this scenario after deployment
@@ -67,14 +67,14 @@ This demo works best if you **first show the app experience**, then briefly map 
 1. Once deployment is complete, open the web app URL from App Service (Default domain).
 1. Confirm the Upload landing page loads.
 
-<img src="./images/05-webapp-upload-page.png" alt="BetterNotes Upload Landing Page" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/05-webapp-upload-page.png" alt="BetterNotes Upload Landing Page" style="width:70%;">
 <br></br>
 
 1. Select a file (PDF, DOCX, or image).
 1. Click **Analyze Document**.
 1. Explain that the app uploads the file, runs Document Intelligence analysis, and generates a downloadable `.docx` result.
 
-<img src="./images/06-webapp-file-selected.png" alt="BetterNotes File Selected" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/06-webapp-file-selected.png" alt="BetterNotes File Selected" style="width:70%;">
 <br></br>
 
 1. Show the final output section:
@@ -83,12 +83,12 @@ This demo works best if you **first show the app experience**, then briefly map 
     - extracted content preview,
     - **Download Processed Document** button.
 
-<img src="./images/07-webapp-analysis-result.png" alt="BetterNotes Analysis Result and Download" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/07-webapp-analysis-result.png" alt="BetterNotes Analysis Result and Download" style="width:70%;">
 <br></br>
 
 1. (Optional) Open the **Instructions** page to walk through supported formats, limits, and best practices.
 
-<img src="./images/08-webapp-instructions-page.png" alt="BetterNotes Instructions Page" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/08-webapp-instructions-page.png" alt="BetterNotes Instructions Page" style="width:70%;">
 <br></br>
 
 #### 2b. Azure Portal walkthrough
@@ -96,7 +96,7 @@ This demo works best if you **first show the app experience**, then briefly map 
 1. From the Azure Portal, navigate to the Resource Group for this scenario.
 1. Show the Resource Group overview and highlight deployed components.
 
-<img src="./images/01-resource-group-overview.png" alt="Resource Group Overview" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/01-resource-group-overview.png" alt="Resource Group Overview" style="width:70%;">
 <br></br>
 
 1. Open **App Service** and show:
@@ -104,7 +104,7 @@ This demo works best if you **first show the app experience**, then briefly map 
     - default domain,
     - hosting plan.
 
-<img src="./images/02-app-service-overview.png" alt="App Service Overview" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/02-app-service-overview.png" alt="App Service Overview" style="width:70%;">
 <br></br>
 
 1. Open **Document Intelligence** and show:
@@ -113,7 +113,7 @@ This demo works best if you **first show the app experience**, then briefly map 
     - pricing tier,
     - where keys/endpoint are managed.
 
-<img src="./images/03-document-intelligence-overview.png" alt="Document Intelligence Resource" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/03-document-intelligence-overview.png" alt="Document Intelligence Resource" style="width:70%;">
 <br></br>
 
 1. Open **Storage Account** and show:
@@ -121,7 +121,7 @@ This demo works best if you **first show the app experience**, then briefly map 
     - that uploads/processed documents are stored securely,
     - relationship to app upload/download flow.
 
-<img src="./images/04-storage-account-overview.png" alt="Storage Account Resource" style="width:70%;">
+<img src="https://raw.githubusercontent.com/petender/azd-betternotes-ai/main/demoguide/images/04-storage-account-overview.png" alt="Storage Account Resource" style="width:70%;">
 <br></br>
 
 #### Application Code view [Optional demo, for developer audience]

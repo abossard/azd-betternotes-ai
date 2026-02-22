@@ -388,6 +388,13 @@
 
         @if (!string.IsNullOrEmpty(Model.AnalysisResult))
         {
+            @if (!string.IsNullOrEmpty(Model.AnalysisModeMessage))
+            {
+                <div class="message success">
+                    @Model.AnalysisModeMessage
+                </div>
+            }
+
             <div class="result-section">
                 <h3>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

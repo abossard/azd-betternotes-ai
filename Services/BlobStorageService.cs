@@ -2,6 +2,7 @@ using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
@@ -12,23 +13,36 @@ namespace BetterNotes.Services
 {
     public class BlobStorageService
     {
-        private readonly BlobServiceClient _blobServiceClient;
+        private readonly BlobServiceClient _blobServiceClient = null!;
         private readonly string _uploadContainer;
         private readonly string _downloadContainer;
         private readonly string _accountName;
         private readonly ILogger<BlobStorageService> _logger;
+        private readonly bool _useLocalStorage;
+        private readonly string _localUploadPath;
+        private readonly string _localDownloadPath;
 
-        public BlobStorageService(IConfiguration configuration, ILogger<BlobStorageService> logger)
+        public BlobStorageService(IConfiguration configuration, ILogger<BlobStorageService> logger, IWebHostEnvironment environment)
         {
             _accountName = configuration["AzureStorage:AccountName"];
             _uploadContainer = configuration["AzureStorage:UploadContainer"] ?? "uploads";
             _downloadContainer = configuration["AzureStorage:DownloadContainer"] ?? "downloads";
             _logger = logger;
 
+            var webRoot = string.IsNullOrWhiteSpace(environment.WebRootPath)
+                ? Path.Combine(environment.ContentRootPath, "wwwroot")
+                : environment.WebRootPath;
+
+            _localUploadPath = Path.Combine(webRoot, "uploads");
+            _localDownloadPath = Path.Combine(_localUploadPath, _downloadContainer);
+
             if (string.IsNullOrEmpty(_accountName))
             {
-                _logger.LogWarning("AzureStorage:AccountName is not configured. Blob storage will not be available.");
-                throw new InvalidOperationException("Storage account name is not configured. Please check your app settings.");
+                _useLocalStorage = true;
+                Directory.CreateDirectory(_localUploadPath);
+                Directory.CreateDirectory(_localDownloadPath);
+                _logger.LogWarning("AzureStorage:AccountName is not configured. Using local file storage at {UploadPath} and {DownloadPath}.", _localUploadPath, _localDownloadPath);
+                return;
             }
 
             // Use Managed Identity to connect to storage
@@ -55,6 +69,21 @@ namespace BetterNotes.Services
         {
             try
             {
+                if (_useLocalStorage)
+                {
+                    Directory.CreateDirectory(_localUploadPath);
+                    var localBlobName = $"{Guid.NewGuid()}_{fileName}";
+                    var localPath = Path.Combine(_localUploadPath, localBlobName);
+
+                    await using var outputStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    await fileStream.CopyToAsync(outputStream);
+
+                    _logger.LogInformation("Saved uploaded file locally: {LocalPath}", localPath);
+                    return localBlobName;
+                }
+
+                EnsureStorageConfigured();
+
                 var containerClient = _blobServiceClient.GetBlobContainerClient(_uploadContainer);
                 
                 _logger.LogInformation("Ensuring uploads container exists: {Container} in account: {AccountName}", 
@@ -95,6 +124,22 @@ namespace BetterNotes.Services
         {
             try
             {
+                if (_useLocalStorage)
+                {
+                    var basePath = containerName == _downloadContainer ? _localDownloadPath : _localUploadPath;
+                    var localPath = Path.Combine(basePath, blobName);
+
+                    if (!File.Exists(localPath))
+                    {
+                        throw new FileNotFoundException($"File '{blobName}' was not found in local storage.", localPath);
+                    }
+
+                    _logger.LogInformation("Reading file from local storage: {LocalPath}", localPath);
+                    return new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                }
+
+                EnsureStorageConfigured();
+
                 var container = containerName ?? _uploadContainer;
                 var containerClient = _blobServiceClient.GetBlobContainerClient(container);
                 var blobClient = containerClient.GetBlobClient(blobName);
@@ -115,6 +160,22 @@ namespace BetterNotes.Services
         {
             try
             {
+                if (_useLocalStorage)
+                {
+                    Directory.CreateDirectory(_localDownloadPath);
+                    var localBlobName = $"{Path.GetFileNameWithoutExtension(fileName)}_{DateTime.UtcNow:yyyyMMddHHmmss}.docx";
+                    var localPath = Path.Combine(_localDownloadPath, localBlobName);
+
+                    fileStream.Position = 0;
+                    await using var outputStream = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    await fileStream.CopyToAsync(outputStream);
+
+                    _logger.LogInformation("Saved processed file locally: {LocalPath}", localPath);
+                    return localBlobName;
+                }
+
+                EnsureStorageConfigured();
+
                 _logger.LogInformation("Starting UploadProcessedFileAsync - FileName: {FileName}, Stream Length: {StreamLength}", 
                     fileName, fileStream.Length);
                 
@@ -179,6 +240,23 @@ namespace BetterNotes.Services
         {
             try
             {
+                if (_useLocalStorage)
+                {
+                    var localPath = Path.Combine(_localDownloadPath, blobName);
+                    if (!File.Exists(localPath))
+                    {
+                        throw new FileNotFoundException($"File '{blobName}' was not found in local storage.", localPath);
+                    }
+
+                    var stream = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    var contentType = GetContentType(blobName);
+
+                    _logger.LogInformation("Serving local processed file: {LocalPath}", localPath);
+                    return (stream, contentType);
+                }
+
+                EnsureStorageConfigured();
+
                 var containerClient = _blobServiceClient.GetBlobContainerClient(_downloadContainer);
                 var blobClient = containerClient.GetBlobClient(blobName);
                 
@@ -206,6 +284,14 @@ namespace BetterNotes.Services
             {
                 _logger.LogError(ex, "Error downloading blob: {BlobName} from container: {Container}", blobName, _downloadContainer);
                 throw;
+            }
+        }
+
+        private void EnsureStorageConfigured()
+        {
+            if (_blobServiceClient is null)
+            {
+                throw new InvalidOperationException("Storage account name is not configured. Please check your app settings.");
             }
         }
 

@@ -34,6 +34,7 @@ namespace BetterNotes.Pages
 
         public string Message { get; set; }
         public string AnalysisResult { get; set; }
+        public string AnalysisModeMessage { get; set; }
         public string DownloadLink { get; set; }
 
         public async Task<IActionResult> OnPostAsync()
@@ -84,6 +85,29 @@ namespace BetterNotes.Pages
                 {
                     // Call Azure AI Service
                     AnalysisResult = await _azureAIService.AnalyzeFileAsync(fileStream, UploadedFile.FileName);
+
+                    if (!string.IsNullOrEmpty(AnalysisResult) && AnalysisResult.StartsWith("Error:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Message = AnalysisResult;
+                        AnalysisModeMessage = "Analysis failed before completion.";
+                        DownloadLink = null;
+                        _logger.LogWarning("Analysis failed for file {FileName}: {AnalysisResult}", UploadedFile.FileName, AnalysisResult);
+                        return Page();
+                    }
+
+                    if (!string.IsNullOrEmpty(AnalysisResult) && AnalysisResult.StartsWith("=== Handwritten Notes (Auto PDF OCR) ==="))
+                    {
+                        AnalysisModeMessage = "Detected handwritten-heavy DOCX content. The app automatically converted embedded images to PDF and ran OCR for better text detection.";
+                    }
+                    else if (!string.IsNullOrEmpty(AnalysisResult) && AnalysisResult.StartsWith("=== Word Text (Fallback Extraction) ==="))
+                    {
+                        AnalysisModeMessage = "Used Word fallback text extraction because Azure Document Intelligence could not fully analyze this DOCX.";
+                    }
+                    else
+                    {
+                        AnalysisModeMessage = "Used standard Azure Document Intelligence analysis.";
+                    }
+
                     _logger.LogInformation("Analysis completed successfully");
                 }
 

@@ -1,16 +1,17 @@
 using Azure;
-using Azure.AI.FormRecognizer;
 using Azure.AI.FormRecognizer.DocumentAnalysis;
 using Azure.Core;
 using Azure.Identity;
+using DocumentFormat.OpenXml.Packaging;
+using PdfSharpCore.Drawing;
+using PdfSharpCore.Pdf;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace BetterNotes.Services
@@ -19,27 +20,38 @@ namespace BetterNotes.Services
     {
         private readonly string _endpoint;
         private readonly string _key;
-        private readonly TokenCredential _credential;
+        private readonly TokenCredential _credential = null!;
         private readonly bool _useManagedIdentity;
+        private readonly bool _isConfigured;
         private readonly ILogger<AzureAIService> _logger;
-        private readonly HttpClient _httpClient;
+        private readonly DocumentAnalysisClient _documentClient = null!;
 
-        public AzureAIService(IConfiguration configuration, ILogger<AzureAIService> logger, HttpClient httpClient)
+        public AzureAIService(IConfiguration configuration, ILogger<AzureAIService> logger)
         {
             _endpoint = configuration["AzureAI:Endpoint"];
             _key = configuration["AzureAI:Key"];
             _logger = logger;
-            _httpClient = httpClient;
+
+            _isConfigured = !string.IsNullOrWhiteSpace(_endpoint);
+            if (!_isConfigured)
+            {
+                _logger.LogWarning("AzureAI:Endpoint is not configured. Azure AI analysis will be unavailable.");
+                return;
+            }
+
+            var endpointUri = new Uri(_endpoint);
 
             // Use Managed Identity if no key is provided
             _useManagedIdentity = string.IsNullOrEmpty(_key);
             if (_useManagedIdentity)
             {
                 _credential = new DefaultAzureCredential();
+                _documentClient = new DocumentAnalysisClient(endpointUri, _credential);
                 _logger.LogInformation("Using Managed Identity for authentication");
             }
             else
             {
+                _documentClient = new DocumentAnalysisClient(endpointUri, new AzureKeyCredential(_key));
                 _logger.LogInformation("Using API Key for authentication");
             }
         }
@@ -50,103 +62,109 @@ namespace BetterNotes.Services
             _logger.LogInformation("Authentication mode: {Mode}", _useManagedIdentity ? "Managed Identity" : "API Key");
             _logger.LogInformation("Endpoint: {Endpoint}", _endpoint);
 
+            if (!_isConfigured)
+            {
+                return "Error: Azure AI endpoint is not configured. Set AzureAI:Endpoint to enable analysis.";
+            }
+
+            var extension = Path.GetExtension(fileName).ToLowerInvariant();
+            var workingStream = new MemoryStream();
+
             try
             {
-                // Determine content type based on file extension
-                var extension = Path.GetExtension(fileName).ToLowerInvariant();
-                var contentType = extension switch
+                var isSupported = extension switch
                 {
-                    ".pdf" => "application/pdf",
-                    ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    ".doc" => "application/msword",
-                    ".jpg" or ".jpeg" => "image/jpeg",
-                    ".png" => "image/png",
-                    ".bmp" => "image/bmp",
-                    ".tiff" or ".tif" => "image/tiff",
-                    ".heif" or ".heic" => "image/heif",
-                    _ => "application/octet-stream"
+                    ".pdf" => true,
+                    ".docx" => true,
+                    ".jpg" or ".jpeg" => true,
+                    ".png" => true,
+                    ".bmp" => true,
+                    ".tiff" or ".tif" => true,
+                    _ => false
                 };
 
-                // Build the Document Intelligence API endpoint
-                var apiVersion = "2023-07-31";
-                var modelId = "prebuilt-document"; // Use prebuilt-document for comprehensive analysis
-                var analyzeEndpoint = $"{_endpoint.TrimEnd('/')}/formrecognizer/documentModels/{modelId}:analyze?api-version={apiVersion}";
-
-                _logger.LogInformation("Using Document Intelligence endpoint: {Endpoint}", analyzeEndpoint);
-
-                var content = new StreamContent(fileStream);
-                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
-
-                // Create the HTTP request message
-                var request = new HttpRequestMessage(HttpMethod.Post, analyzeEndpoint)
+                if (!isSupported)
                 {
-                    Content = content
-                };
-                
-                // Add authentication header based on auth method
-                if (_useManagedIdentity)
-                {
-                    try
-                    {
-                        var tokenRequestContext = new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" });
-                        _logger.LogInformation("Requesting token for scope: https://cognitiveservices.azure.com/.default");
-                        var token = await _credential.GetTokenAsync(tokenRequestContext, default);
-                        _logger.LogInformation("Successfully obtained token with Managed Identity");
-                        request.Headers.Add("Authorization", $"Bearer {token.Token}");
-                    }
-                    catch (Exception authEx)
-                    {
-                        _logger.LogError(authEx, "Failed to obtain token with Managed Identity. This could be due to role assignment not being propagated yet.");
-                        throw new Exception("Failed to authenticate with Managed Identity. Please wait a few minutes for role assignments to propagate.", authEx);
-                    }
-                }
-                else
-                {
-                    request.Headers.Add("Ocp-Apim-Subscription-Key", _key);
+                    return $"Error: Unsupported file type '{extension}'. Supported types for analysis are PDF, DOCX, JPG, PNG, BMP, and TIFF.";
                 }
 
-                var response = await _httpClient.SendAsync(request);
-
-                if (!response.IsSuccessStatusCode)
+                if (fileStream.CanSeek)
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError("Azure AI analysis failed with status code: {StatusCode}, Error: {Error}", response.StatusCode, errorContent);
-                    
-                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                    fileStream.Position = 0;
+                }
+                await fileStream.CopyToAsync(workingStream);
+                workingStream.Position = 0;
+
+                if (extension == ".docx")
+                {
+                    var handwrittenPdfStream = TryCreatePdfFromLikelyHandwrittenDocx(workingStream, fileName);
+                    if (handwrittenPdfStream != null)
                     {
-                        return "Error: Access forbidden (403). The managed identity may not have the required permissions yet. Please wait 5-10 minutes for role assignments to propagate, then try again.";
+                        using (handwrittenPdfStream)
+                        {
+                            try
+                            {
+                                var handwrittenResult = await AnalyzeWithModelAsync(handwrittenPdfStream, "prebuilt-read");
+                                if (!string.IsNullOrWhiteSpace(handwrittenResult.Content))
+                                {
+                                    _logger.LogInformation("Used auto DOCX-to-PDF OCR path for file: {FileName}", fileName);
+                                    return "=== Handwritten Notes (Auto PDF OCR) ===\n" + ExtractTextFromAnalyzeResult(handwrittenResult);
+                                }
+                            }
+                            catch (RequestFailedException handwrittenEx)
+                            {
+                                _logger.LogWarning(handwrittenEx, "Auto DOCX-to-PDF OCR path failed for file: {FileName}; continuing with standard DOCX analysis.", fileName);
+                            }
+                        }
                     }
-                    
-                    return $"Error: Unable to analyze file. Status: {response.StatusCode}";
                 }
 
-                // Document Intelligence returns a 202 Accepted with an Operation-Location header
-                if (response.StatusCode == System.Net.HttpStatusCode.Accepted)
+                var result = await AnalyzeWithModelAsync(workingStream, "prebuilt-document");
+
+                if (string.IsNullOrWhiteSpace(result.Content))
                 {
-                    var operationLocation = response.Headers.GetValues("Operation-Location").FirstOrDefault();
-                    if (string.IsNullOrEmpty(operationLocation))
-                    {
-                        _logger.LogError("No Operation-Location header found in response.");
-                        return "Error: No Operation-Location header found.";
-                    }
-
-                    _logger.LogInformation("Document analysis started. Polling results from: {OperationLocation}", operationLocation);
-
-                    // Poll for results
-                    var analysisResult = await PollForResultsAsync(operationLocation);
-                    return analysisResult;
-                }
-
-                var responseContent = await response.Content.ReadAsStringAsync();
-                _logger.LogInformation("Azure AI Response: {ResponseContent}", responseContent);
-
-                if (string.IsNullOrWhiteSpace(responseContent))
-                {
-                    _logger.LogError("Azure AI returned an empty response.");
+                    _logger.LogWarning("Azure AI returned an empty analysis result for file: {FileName}", fileName);
                     return "Error: Empty response from Azure AI.";
                 }
 
-                return responseContent;
+                return ExtractTextFromAnalyzeResult(result);
+            }
+            catch (RequestFailedException ex) when (ex.Status == 400)
+            {
+                _logger.LogError(ex, "Document Intelligence returned BadRequest for file: {FileName}. ErrorCode: {ErrorCode}", fileName, ex.ErrorCode);
+
+                if (extension == ".docx")
+                {
+                    var retryPdfStream = TryCreatePdfFromDocxImages(workingStream, fileName, useHeuristic: false);
+                    if (retryPdfStream != null)
+                    {
+                        using (retryPdfStream)
+                        {
+                            try
+                            {
+                                var retryResult = await AnalyzeWithModelAsync(retryPdfStream, "prebuilt-read");
+                                if (!string.IsNullOrWhiteSpace(retryResult.Content))
+                                {
+                                    _logger.LogInformation("Recovered DOCX BadRequest by converting embedded images to PDF for file: {FileName}", fileName);
+                                    return "=== Handwritten Notes (Auto PDF OCR) ===\n" + ExtractTextFromAnalyzeResult(retryResult);
+                                }
+                            }
+                            catch (RequestFailedException retryEx)
+                            {
+                                _logger.LogWarning(retryEx, "DOCX BadRequest recovery via PDF OCR failed for file: {FileName}", fileName);
+                            }
+                        }
+                    }
+
+                    return await ExtractWordTextFallbackAsync(fileStream, fileName, ex.Message);
+                }
+
+                return $"Error: Unable to analyze file. Status: BadRequest. Details: {ex.Message}";
+            }
+            catch (RequestFailedException ex) when (ex.Status == 403)
+            {
+                _logger.LogError(ex, "Document Intelligence access forbidden for file: {FileName}. ErrorCode: {ErrorCode}", fileName, ex.ErrorCode);
+                return "Error: Access forbidden (403). The managed identity may not have the required permissions yet. Please wait 5-10 minutes for role assignments to propagate, then try again.";
             }
             catch (Exception ex)
             {
@@ -155,120 +173,29 @@ namespace BetterNotes.Services
             }
         }
 
-        private async Task<string> PollForResultsAsync(string operationLocation)
-        {
-            var maxAttempts = 30; // Poll for up to 30 seconds
-            var delay = TimeSpan.FromSeconds(1);
-
-            for (int i = 0; i < maxAttempts; i++)
-            {
-                await Task.Delay(delay);
-
-                var request = new HttpRequestMessage(HttpMethod.Get, operationLocation);
-                
-                // Add authentication header based on auth method
-                if (_useManagedIdentity)
-                {
-                    var tokenRequestContext = new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" });
-                    var token = await _credential.GetTokenAsync(tokenRequestContext, default);
-                    request.Headers.Add("Authorization", $"Bearer {token.Token}");
-                }
-                else
-                {
-                    request.Headers.Add("Ocp-Apim-Subscription-Key", _key);
-                }
-
-                var response = await _httpClient.SendAsync(request);
-                var responseContent = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogError("Polling failed with status code: {StatusCode}", response.StatusCode);
-                    return $"Error: Polling failed. Status: {response.StatusCode}";
-                }
-
-                try
-                {
-                    var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
-                    var status = result.GetProperty("status").GetString();
-
-                    _logger.LogInformation("Analysis status: {Status}", status);
-
-                    if (status == "succeeded")
-                    {
-                        // Extract the text content from the analysis result
-                        var analyzeResult = result.GetProperty("analyzeResult");
-                        var content = ExtractTextFromAnalyzeResult(analyzeResult);
-                        return content;
-                    }
-                    else if (status == "failed")
-                    {
-                        var error = result.GetProperty("error");
-                        _logger.LogError("Analysis failed: {Error}", error.ToString());
-                        return $"Error: Analysis failed. {error}";
-                    }
-                    // If status is "running", continue polling
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogError(ex, "Failed to parse polling response.");
-                    return "Error: Failed to parse polling response.";
-                }
-            }
-
-            return "Error: Analysis timeout. Please try again.";
-        }
-
-        private string ExtractTextFromAnalyzeResult(JsonElement analyzeResult)
+        private string ExtractTextFromAnalyzeResult(AnalyzeResult analyzeResult)
         {
             var sb = new StringBuilder();
 
             try
             {
-                // Extract content (text with reading order)
-                if (analyzeResult.TryGetProperty("content", out var content))
+                if (!string.IsNullOrWhiteSpace(analyzeResult.Content))
                 {
                     sb.AppendLine("=== Document Content ===");
-                    sb.AppendLine(content.GetString());
+                    sb.AppendLine(analyzeResult.Content);
                     sb.AppendLine();
                 }
 
-                // Extract key-value pairs
-                if (analyzeResult.TryGetProperty("keyValuePairs", out var keyValuePairs))
+                if (analyzeResult.KeyValuePairs.Count > 0)
                 {
                     sb.AppendLine("=== Key-Value Pairs ===");
-                    foreach (var kvp in keyValuePairs.EnumerateArray())
+                    foreach (var kvp in analyzeResult.KeyValuePairs)
                     {
-                        if (kvp.TryGetProperty("key", out var key) && 
-                            key.TryGetProperty("content", out var keyContent))
-                        {
-                            var keyText = keyContent.GetString();
-                            var valueText = "";
-
-                            if (kvp.TryGetProperty("value", out var value) && 
-                                value.TryGetProperty("content", out var valueContent))
-                            {
-                                valueText = valueContent.GetString();
-                            }
-
-                            sb.AppendLine($"{keyText}: {valueText}");
-                        }
+                        var keyText = kvp.Key?.Content ?? "";
+                        var valueText = kvp.Value?.Content ?? "";
+                        sb.AppendLine($"{keyText}: {valueText}");
                     }
                     sb.AppendLine();
-                }
-
-                // Extract entities if available
-                if (analyzeResult.TryGetProperty("entities", out var entities))
-                {
-                    sb.AppendLine("=== Entities ===");
-                    foreach (var entity in entities.EnumerateArray())
-                    {
-                        if (entity.TryGetProperty("content", out var entityContent) &&
-                            entity.TryGetProperty("category", out var category))
-                        {
-                            sb.AppendLine($"{category.GetString()}: {entityContent.GetString()}");
-                        }
-                    }
                 }
             }
             catch (Exception ex)
@@ -278,6 +205,131 @@ namespace BetterNotes.Services
             }
 
             return sb.ToString();
+        }
+
+        private async Task<AnalyzeResult> AnalyzeWithModelAsync(Stream inputStream, string modelId)
+        {
+            if (inputStream.CanSeek)
+            {
+                inputStream.Position = 0;
+            }
+
+            var operation = await _documentClient.AnalyzeDocumentAsync(WaitUntil.Completed, modelId, inputStream);
+            return operation.Value;
+        }
+
+        private MemoryStream TryCreatePdfFromLikelyHandwrittenDocx(MemoryStream docxStream, string fileName)
+        {
+            return TryCreatePdfFromDocxImages(docxStream, fileName, useHeuristic: true);
+        }
+
+        private MemoryStream TryCreatePdfFromDocxImages(MemoryStream docxStream, string fileName, bool useHeuristic)
+        {
+            try
+            {
+                if (docxStream.CanSeek)
+                {
+                    docxStream.Position = 0;
+                }
+
+                using var clone = new MemoryStream(docxStream.ToArray());
+                using var wordDoc = WordprocessingDocument.Open(clone, false);
+
+                var plainText = wordDoc.MainDocumentPart?.Document?.Body?.InnerText ?? string.Empty;
+                var imageParts = wordDoc.MainDocumentPart?.ImageParts?.ToList() ?? new List<ImagePart>();
+                var imageBytes = imageParts
+                    .Where(part => IsSupportedImagePart(part.ContentType))
+                    .Select(ReadImagePartBytes)
+                    .Where(bytes => bytes.Length > 0)
+                    .ToList();
+
+                if (imageBytes.Count == 0)
+                {
+                    return null;
+                }
+
+                var likelyHandwrittenDocx = plainText.Length < 800;
+                if (useHeuristic && !likelyHandwrittenDocx)
+                {
+                    return null;
+                }
+
+                var pdfBytes = BuildPdfFromImages(imageBytes);
+                _logger.LogInformation("Detected likely handwritten DOCX for {FileName} (text length: {TextLength}, images: {ImageCount}). Generated PDF for OCR.", fileName, plainText.Length, imageBytes.Count);
+                return new MemoryStream(pdfBytes);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to build PDF from DOCX embedded images for file: {FileName}", fileName);
+                return null;
+            }
+        }
+
+        private static bool IsSupportedImagePart(string contentType)
+        {
+            return contentType == "image/jpeg"
+                || contentType == "image/png"
+                || contentType == "image/bmp"
+                || contentType == "image/tiff";
+        }
+
+        private static byte[] ReadImagePartBytes(ImagePart imagePart)
+        {
+            using var imageStream = imagePart.GetStream();
+            using var buffer = new MemoryStream();
+            imageStream.CopyTo(buffer);
+            return buffer.ToArray();
+        }
+
+        private static byte[] BuildPdfFromImages(IReadOnlyList<byte[]> imageBytes)
+        {
+            using var output = new MemoryStream();
+            using var document = new PdfDocument();
+
+            foreach (var bytes in imageBytes)
+            {
+                using var image = XImage.FromStream(() => new MemoryStream(bytes));
+                var page = document.AddPage();
+                page.Width = image.PointWidth;
+                page.Height = image.PointHeight;
+
+                using var graphics = XGraphics.FromPdfPage(page);
+                graphics.DrawImage(image, 0, 0, page.Width, page.Height);
+            }
+
+            document.Save(output, false);
+            return output.ToArray();
+        }
+
+        private async Task<string> ExtractWordTextFallbackAsync(Stream originalStream, string fileName, string azureErrorDetails)
+        {
+            try
+            {
+                if (originalStream.CanSeek)
+                {
+                    originalStream.Position = 0;
+                }
+
+                using var copy = new MemoryStream();
+                await originalStream.CopyToAsync(copy);
+                copy.Position = 0;
+
+                using var wordDoc = WordprocessingDocument.Open(copy, false);
+                var text = wordDoc.MainDocumentPart?.Document?.Body?.InnerText;
+
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return "Error: Azure Document Intelligence could not process this Word file, and no extractable text was found. This often means handwriting is stored as Word ink/drawing objects rather than images. Please export to PDF and upload the PDF for OCR.";
+                }
+
+                _logger.LogWarning("Azure analysis failed for DOCX file {FileName}; returned local OpenXML text extraction fallback.", fileName);
+                return $"=== Word Text (Fallback Extraction) ===\n{text}\n\n[Note] Azure analysis failed with: {azureErrorDetails}";
+            }
+            catch (Exception fallbackEx)
+            {
+                _logger.LogError(fallbackEx, "DOCX fallback extraction also failed for file: {FileName}", fileName);
+                return $"Error: Unable to analyze file. Status: BadRequest. Details: {azureErrorDetails}";
+            }
         }
     }
 }

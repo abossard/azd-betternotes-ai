@@ -10,6 +10,9 @@ obj/
 # Azure Developer CLI
 .azure/
 
+# Playwright logs
+.playwright-mcp
+
 # Visual Studio
 .vs/
 

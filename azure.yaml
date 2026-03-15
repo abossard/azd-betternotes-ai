@@ -21,3 +21,8 @@ hooks:
       run: |
         Write-Host "Configuring application settings..."
         azd env get-values | Out-File -FilePath .env -Encoding utf8
+    posix:
+      shell: sh
+      run: |
+        echo "Configuring application settings..."
+        azd env get-values > .env

@@ -91,7 +91,7 @@ module web './core/host/appservice.bicep' = {
     applicationInsightsName: monitoring.outputs.applicationInsightsName
     appServicePlanId: appServicePlan.outputs.id
     runtimeName: 'dotnet'
-    runtimeVersion: '9.0'
+    runtimeVersion: '8.0'
     managedIdentity: true
     appSettings: {
       'AzureAI:Endpoint': documentIntelligence.outputs.endpoint
